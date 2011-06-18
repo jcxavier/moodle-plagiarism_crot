@@ -96,6 +96,7 @@ class Urls {
 				}
 				$k++;
 			}
+			
 			$selected[] = $this->list[$maxs[$j]];
 		}
 		return $selected;
@@ -117,12 +118,13 @@ class Urls {
 * function tokenizer
 * it takes a path to a file and returns a string variable that contains plain text extracted from the file
 */
-function tokenizer($path) {
+function tokenizer($path, $extension) {
 	global $CFG;
 	if (is_readable($path)){
 		// USE extension to choose tokenizer
-		$path_parts = pathinfo($path);
-		switch (strtolower($path_parts['extension'])):
+	//	$path_parts = pathinfo($path);
+	//	switch (strtolower($path_parts['extension'])):
+        switch (strtolower($extension)):
 			case "pdf":
 				$result = pdf2text($path);
 				return $result;
@@ -140,9 +142,13 @@ function tokenizer($path) {
 				return $result;
 			case "txt":
 				return file_get_contents($path);
+			case "c":
 			case "cpp":
-				return file_get_contents($path);
+			case "cs":
 			case "java":
+			case "py":
+			case "scm":
+			case "sql":
 				return file_get_contents($path);
 			default:
     				return "unknown file type";
@@ -174,8 +180,9 @@ function StripText ($atext, $subst)
 function GetFingerprint ($atext)
 {
 	global $CFG;
-	$gram_size 	= $CFG->block_crot_grammarsize; 
-	$window_size	= $CFG->block_crot_windowsize;
+    $plagiarismsettings = (array)get_config('plagiarism');
+    $gram_size = $plagiarismsettings['crot_grammarsize']; 
+    $window_size = $plagiarismsettings['crot_windowsize'];
 	$hashes = array();
 	try{
 		$stripped_text = StripText($atext,"");
@@ -248,7 +255,8 @@ function GetFingerprint ($atext)
 * it replaces part of the text from $start to $end with the same text but colored with $color
 */
 function colorer($text, $start, $end, $color) {
-	return mb_substr($text,0,$start, "utf-8")."<font color=\"$color\">".mb_substr($text,$start,$end-$start+1, "utf-8")."</font>".mb_substr($text,$end+1, "utf-8");
+    $rem = mb_strlen($text)-$end-1;
+	return mb_substr($text,0,$start, "utf-8")."<b><font color=\"$color\">".mb_substr($text,$start,$end-$start+1, "utf-8")."</font></b>".mb_substr($text,$end+1,$rem, "utf-8");
 }// end of function colorer
 
 
@@ -329,6 +337,8 @@ function strip_html_tags( $text )
 function getremotecontent($url)
 {
 	global $CFG;
+    $plagiarismsettings = (array)get_config('plagiarism');
+    $file_size = $plagiarismsettings['crot_max_file_size']; 
     	// analyze the extension (type) of the resource
     	// TODO it would be better to define type by the content marker in the stream
     	$splittedurl = parse_url($url);
@@ -350,7 +360,7 @@ function getremotecontent($url)
 					file_put_contents($tmpfilename, $infile, FILE_BINARY);	
 					//check if file size is too large then don't download it
 					//TODO adjust max size in settings
-					if (filesize($tmpfilename)<1000000){
+					if (filesize($tmpfilename)<$file_size){
 					    $result = html_entity_decode(doc2text($tmpfilename),null,'UTF-8');     
 					}else{
 					    echo"\nFile $url was not dowloaded because of its large size\n";
@@ -408,4 +418,35 @@ function getremotecontent($url)
     // get it and put in to temporary file
     // send to to tokenizer
 }
-
+// function getTopResults
+// takes $queries - queries for Web search
+//       $todown - number of web documents to be downloaded
+//       $msnkey - MS Application ID key
+//       $culture_info - culture info for global search
+// returns x most popular links, where x = $todown
+function getTopResults($queries, $todown, $msnkey, $culture_info)
+{
+    // create list of URLs
+    $allURLs = new Urls;	
+    $i=0;
+    foreach ($queries as $query) {
+		$query = mb_ereg_replace("/[^\w\d]/g","",$query);
+		$query = "'".trim($query)."'";
+		$i++;
+		try {
+			$searchres = fetchBingResults($query, $todown, $msnkey, $culture_info);
+		}
+		catch (Exception $e) {
+			print_error("exception in querying MSN!\n");
+		}
+		foreach($searchres as $hit) {
+			$ahit = new oneUrl;
+			$ahit->mainUrl = $hit;
+			$ahit->queryID = md5($hit);
+			$ahit->msUrl = $hit;
+			$ahit->counter = 1;
+			$allURLs->addUrl($ahit);
+		}// end parsing results
+    }// end sending queries: we have top x results
+    return $allURLs->getMax($todown);
+}

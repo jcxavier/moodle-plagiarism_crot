@@ -21,7 +21,8 @@
  * @since 2.0
  * @package    plagiarism_crot
  * @subpackage plagiarism
- * @copyright  2010 Dan Marsden http://danmarsden.com
+ * @author     Dan Marsden, Sergey Butakov, Svetlana Kim
+ * @copyright  2010 Dan Marsden, Sergey Butakov, Svetlana Kim
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 
@@ -33,23 +34,45 @@ if (!defined('MOODLE_INTERNAL')) {
 global $CFG;
 require_once($CFG->dirroot.'/plagiarism/lib.php');
 
-///// Turnitin Class ////////////////////////////////////////////////////
+///// Crot Class ////////////////////////////////////////////////////
 class plagiarism_plugin_crot extends plagiarism_plugin {
      /**
      * hook to allow plagiarism specific information to be displayed beside a submission 
-     * @param array  $linkarraycontains all relevant information for the plugin to generate a link
+     * @param array  $linkarray contains all relevant information for the plugin to generate a link
      * @return string
      * 
      */
     public function get_links($linkarray) {
         //$userid, $file, $cmid, $course, $module
+        global $DB, $CFG;
         $cmid = $linkarray['cmid'];
         $userid = $linkarray['userid'];
         $file = $linkarray['file'];
+        $course = $linkarray['course'];
+        $cid = $course->id;
         $output = '';
+        
         //add link/information about this file to $output
-        // retrieve total similarity score and print it here along with link to the detailed report
-         
+            if (!$crot_files_rec = $DB->get_record("crot_files", array("file_id"=>$file->get_id()))) {
+                $output .= '';// if there is no record in crot_files about this file then nothing to show
+            }
+            else {
+                if (!$crot_doc_rec = $DB->get_record("crot_documents", array("crot_submission_id"=>$crot_files_rec->id))) {
+                    $output .= '';// if there is no record in crot_documents about this file then nothing to show
+                }
+                else {
+                    $sql_query = "SELECT max(number_of_same_hashes) as max FROM {$CFG->prefix}crot_submission_pair WHERE submission_a_id ='$crot_doc_rec->id' OR  submission_b_id = '$crot_doc_rec->id'";
+                    if (!$similarity = $DB->get_record_sql($sql_query)) {// get maximum number of same hashes for the current document
+                        $output .= '<br><b>'.get_string('no_similarities','plagiarism_crot').'</b>';
+                    }
+                    else {
+                        $sql_query = "SELECT count(*) as cnt from {$CFG->prefix}crot_fingerprint where crot_doc_id = '$crot_doc_rec->id'";
+                        $numbertotal = $DB->get_record_sql($sql_query);// get total number of hashes for the current document
+                        $perc =  round(($similarity->max / $numbertotal->cnt) * 100, 2);
+                        $output .= "<br><b> <a href=\"../../plagiarism/crot/index.php?id_a=$crot_doc_rec->id&user_id=$userid&cid=$cid\">".$perc."%</a></b>";
+                    }
+                }
+            }
         return $output;
     }
 
@@ -149,6 +172,9 @@ class plagiarism_plugin_crot extends plagiarism_plugin {
      */
     public function cron() {
         //do any scheduled task stuff
+        global $CFG;
+        require_once($CFG->dirroot.'/plagiarism/crot/crot_cron.php');
+        
     }
     public function config_options() {
         return array('crot_use','crot_local', 'crot_global');
@@ -156,17 +182,58 @@ class plagiarism_plugin_crot extends plagiarism_plugin {
 }
 
 function crot_event_file_uploaded($eventdata) {
+    global $DB;
     $result = true;
         //a file has been uploaded - submit this to the plagiarism prevention service.
-
+        
     return $result;
 }
 function crot_event_files_done($eventdata) {
+    global $DB;
     $result = true;
         //mainly used by assignment finalize - used if you want to handle "submit for marking" events
         //a file has been uploaded/finalised - submit this to the plagiarism prevention service.
-
-    return $result;
+    $plagiarismvalues = $DB->get_records_menu('crot_config', array('cm'=>$eventdata->cmid),'','name,value');
+    if (empty($plagiarismvalues['crot_use'])) {
+        return $result;
+    }
+    else {
+        $status_value = array('queue','in_processing','end_processing');
+        $modulecontext = get_context_instance(CONTEXT_MODULE, $eventdata->cmid);
+        $fs = get_file_storage();
+        
+        $files = $fs->get_area_files($modulecontext->id, 'mod_assignment','submission', $eventdata->itemid);
+        $progassessment_files = $fs->get_area_files($modulecontext->id, 'mod_progassessment','progassessment_submission', $eventdata->itemid);
+        
+        if ($progassessment_files)
+            $files = $files + $progassessment_files;
+        
+        if ($files) {
+            // put files that were submitted for marking into queue for check up
+            foreach ($files as $file) {
+                if ($file->get_filename()==='.') {
+                    continue;
+                }
+                
+                // guarantee that a file is not resubmitted
+                if ($DB->record_exists('crot_files', array( "file_id" => $file->get_id() ))) {
+                    continue;
+                }
+                
+                $newelement = new stdclass();
+                $newelement->file_id = $file->get_id();
+                $newelement->path = $file->get_contenthash();
+                $newelement->status = $status_value[0]; 
+                $newelement->time = time(); 
+                $newelement->cm = $eventdata->cmid;    
+                $newelement->courseid = $eventdata->courseid;
+                
+                $result=$DB->insert_record('crot_files', $newelement);
+                echo "\nfile ".$file->get_filename()." was queued up for plagiarism detection service\n";
+            }
+        }
+        return $result;
+    }
 }
 
 function crot_event_mod_created($eventdata) {
